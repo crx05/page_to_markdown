@@ -1,0 +1,131 @@
+:root {
+  color-scheme: light;
+  font-family: "Segoe UI", "Helvetica Neue", Arial, sans-serif;
+  background:
+    radial-gradient(circle at top left, #ffe7bf 0, rgba(255, 231, 191, 0) 45%),
+    linear-gradient(160deg, #f4f0e8 0%, #ebe4d6 45%, #d8ceb8 100%);
+  color: #1f1a13;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  min-width: 360px;
+  min-height: 320px;
+}
+
+.popup-shell {
+  padding: 22px;
+}
+
+.hero {
+  margin-bottom: 18px;
+}
+
+.eyebrow {
+  margin: 0 0 10px;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  color: #7d6142;
+}
+
+.hero h1 {
+  margin: 0 0 10px;
+  font-size: 28px;
+  line-height: 1;
+}
+
+.subtitle {
+  margin: 0;
+  font-size: 14px;
+  line-height: 1.5;
+  color: #4b3c2d;
+}
+
+.panel {
+  padding: 18px;
+  border: 1px solid rgba(71, 48, 24, 0.15);
+  border-radius: 18px;
+  background: rgba(255, 252, 246, 0.78);
+  backdrop-filter: blur(8px);
+  box-shadow: 0 12px 28px rgba(71, 48, 24, 0.1);
+}
+
+.button-stack {
+  display: grid;
+  gap: 12px;
+}
+
+.convert-button {
+  width: 100%;
+  border: 0;
+  border-radius: 14px;
+  padding: 14px 16px;
+  font: inherit;
+  font-size: 15px;
+  font-weight: 700;
+  background: linear-gradient(135deg, #b95322 0%, #7b2f0d 100%);
+  color: #fffaf0;
+  cursor: pointer;
+  transition: transform 120ms ease, box-shadow 120ms ease, opacity 120ms ease;
+  box-shadow: 0 10px 24px rgba(123, 47, 13, 0.26);
+}
+
+.convert-button:hover:not(:disabled) {
+  transform: translateY(-1px);
+}
+
+.convert-button:disabled {
+  cursor: wait;
+  opacity: 0.72;
+}
+
+.secondary-button {
+  width: 100%;
+  border: 1px solid rgba(71, 48, 24, 0.18);
+  border-radius: 14px;
+  padding: 14px 16px;
+  font: inherit;
+  font-size: 15px;
+  font-weight: 700;
+  background: rgba(255, 251, 243, 0.86);
+  color: #3d2f20;
+  cursor: pointer;
+  transition: transform 120ms ease, border-color 120ms ease, opacity 120ms ease;
+}
+
+.secondary-button:hover:not(:disabled) {
+  transform: translateY(-1px);
+  border-color: rgba(71, 48, 24, 0.34);
+}
+
+.secondary-button:disabled {
+  cursor: wait;
+  opacity: 0.72;
+}
+
+.status-message {
+  min-height: 44px;
+  margin: 16px 0 0;
+  padding: 12px 14px;
+  border-radius: 12px;
+  font-size: 13px;
+  line-height: 1.45;
+  background: rgba(122, 103, 78, 0.08);
+  color: #4d3f31;
+}
+
+.status-message[data-tone="success"] {
+  background: rgba(38, 120, 75, 0.12);
+  color: #15592f;
+}
+
+.status-message[data-tone="error"] {
+  background: rgba(145, 34, 19, 0.12);
+  color: #7b2218;
+}

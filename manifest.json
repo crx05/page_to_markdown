@@ -1,0 +1,19 @@
+{
+  "manifest_version": 3,
+  "name": "Page to Markdown",
+  "version": "0.1.0",
+  "description": "Convert the current page into Markdown, preview it, and download it as a file.",
+  "permissions": [
+    "activeTab",
+    "downloads",
+    "scripting",
+    "storage"
+  ],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "action": {
+    "default_title": "Page to Markdown",
+    "default_popup": "popup.html"
+  }
+}

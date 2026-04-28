@@ -1,0 +1,43 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Markdown Preview</title>
+    <link rel="stylesheet" href="preview.css">
+  </head>
+  <body>
+    <main class="page-shell">
+      <section class="meta-panel">
+        <div class="meta-copy">
+          <p class="eyebrow">Preview</p>
+          <h1 id="pageTitle">Waiting for content</h1>
+          <a id="pageUrl" class="source-link" href="#" target="_blank" rel="noreferrer noopener">
+            Source URL
+          </a>
+          <div class="meta-badges">
+            <span id="modeBadge" class="meta-badge">Mode</span>
+            <span id="platformBadge" class="meta-badge">Platform</span>
+          </div>
+        </div>
+
+        <div class="download-card">
+          <label class="field-label" for="filenameInput">Filename</label>
+          <input id="filenameInput" class="filename-input" type="text" value="page.md">
+          <button id="downloadButton" class="download-button" type="button">Download Markdown</button>
+          <p id="downloadStatus" class="download-status" aria-live="polite"></p>
+        </div>
+      </section>
+
+      <section class="editor-panel">
+        <div class="editor-toolbar">
+          <span id="statsText">0 chars</span>
+          <span id="capturedText">Not captured yet</span>
+        </div>
+        <textarea id="markdownEditor" class="markdown-editor" spellcheck="false"></textarea>
+      </section>
+    </main>
+
+    <script src="preview.js"></script>
+  </body>
+</html>

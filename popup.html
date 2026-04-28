@@ -1,0 +1,36 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Page to Markdown</title>
+    <link rel="stylesheet" href="popup.css">
+  </head>
+  <body>
+    <main class="popup-shell">
+      <header class="hero">
+        <p class="eyebrow">API Docs Export</p>
+        <h1>Page to Markdown</h1>
+        <p class="subtitle">
+          Extract API-documentation content from the active page, filter navigation noise, then preview and download it.
+        </p>
+      </header>
+
+      <section class="panel">
+        <div class="button-stack">
+          <button id="autoConvertButton" class="convert-button" type="button">
+            Auto Extract API Docs
+          </button>
+          <button id="manualSelectButton" class="secondary-button" type="button">
+            Select Doc Area Manually
+          </button>
+        </div>
+        <p id="statusMessage" class="status-message" aria-live="polite">
+          Ready to extract API documentation from the current tab.
+        </p>
+      </section>
+    </main>
+
+    <script src="popup.js"></script>
+  </body>
+</html>
