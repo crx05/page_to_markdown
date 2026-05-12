@@ -46,6 +46,17 @@
     "expand all"
   ];
 
+  const fieldPathUtils = globalThis.PageToMarkdownFieldPathUtils || null;
+  const STRUCTURED_FIELD_ROW_SELECTORS = [
+    ".property-row",
+    "[class*='property-row']",
+    "[class*='field-row']",
+    "[class*='schema-row']",
+    "[class*='param-row']",
+    "[data-property-name]",
+    "[data-field-name]"
+  ];
+
   chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     if (message?.type === "page-to-markdown:run-auto") {
       void handleAutoRequest().then(
@@ -378,6 +389,7 @@
     }
 
     const clonedRoot = selectedRoot.cloneNode(true);
+    preprocessStructuredContent(selectedRoot, clonedRoot, detectedPlatform);
     pruneNode(clonedRoot, detectedPlatform);
 
     const title = pickDocumentTitle(selectedRoot);
@@ -806,9 +818,602 @@
     return lines.map((line, index) => index === 0 ? line : `  ${line}`).join("\n");
   }
 
+  function preprocessStructuredContent(originalRoot, clonedRoot, detectedPlatform) {
+    if (!fieldPathUtils) {
+      return;
+    }
+
+    annotateStructuredTables(originalRoot, clonedRoot);
+    replaceStructuredFieldBlocks(originalRoot, clonedRoot, detectedPlatform);
+  }
+
+  function annotateStructuredTables(originalRoot, clonedRoot) {
+    const originalTables = [...originalRoot.querySelectorAll("table")];
+    const clonedTables = [...clonedRoot.querySelectorAll("table")];
+    const tableCount = Math.min(originalTables.length, clonedTables.length);
+
+    for (let index = 0; index < tableCount; index += 1) {
+      const analysis = analyzeFieldTable(originalTables[index]);
+      if (!analysis) {
+        continue;
+      }
+
+      applyFieldTableMetadata(clonedTables[index], analysis);
+    }
+  }
+
+  function analyzeFieldTable(tableNode) {
+    const rowNodes = getTableRows(tableNode);
+    if (rowNodes.length < 2) {
+      return null;
+    }
+
+    const headerTexts = getTableCells(rowNodes[0]).map((cell) => cleanWhitespace(cell.textContent || ""));
+    if (!headerTexts.length) {
+      return null;
+    }
+
+    const sampleRows = rowNodes
+      .slice(1, 6)
+      .map((rowNode) => getTableCells(rowNode).map((cell) => cleanWhitespace(cell.textContent || "")));
+
+    const columns = fieldPathUtils.detectFieldTable(headerTexts, sampleRows);
+    if (!columns.isFieldTable || columns.nameIndex < 0) {
+      return null;
+    }
+
+    const rawRows = rowNodes
+      .slice(1)
+      .map((rowNode, rowOffset) => buildFieldTableRowRecord(rowNode, rowOffset + 1, columns))
+      .filter(Boolean);
+
+    if (!rawRows.length) {
+      return null;
+    }
+
+    const indentProfile = createIndentProfile(rawRows.map((row) => row.rawIndentPx));
+    const normalizedRows = fieldPathUtils.normalizeFieldRows(
+      rawRows.map((row) => {
+        const styleDepth = resolveStyleDepth(row.rawIndentPx, indentProfile);
+        const depth = Number.isFinite(row.depth) ? row.depth : styleDepth;
+        const depthSource = row.depthSource === "none" && styleDepth > 0 ? "style" : row.depthSource;
+
+        return {
+          name: row.name,
+          type: row.type,
+          required: row.required,
+          description: row.description,
+          depth,
+          depthSource
+        };
+      })
+    );
+
+    const hasStructuredSignal = normalizedRows.some((row, index) => {
+      const originalName = fieldPathUtils.normalizeFieldLabel(rawRows[index].name).label;
+      return row.path !== originalName || row.path.includes(".") || row.path.includes("[]");
+    });
+
+    if (!hasStructuredSignal) {
+      return null;
+    }
+
+    return {
+      columns,
+      rows: normalizedRows.map((row, index) => ({
+        ...row,
+        rowOffset: rawRows[index].rowOffset
+      }))
+    };
+  }
+
+  function buildFieldTableRowRecord(rowNode, rowOffset, columns) {
+    const cells = getTableCells(rowNode);
+    const nameCell = cells[columns.nameIndex];
+    if (!nameCell) {
+      return null;
+    }
+
+    const nameAnchor = findMostIndentedTextElement(nameCell);
+    const name = cleanWhitespace((nameAnchor?.textContent || nameCell.textContent || ""));
+    if (!name) {
+      return null;
+    }
+
+    const depthInfo = inspectStructuredDepth(rowNode, nameAnchor || nameCell, nameCell);
+
+    return {
+      rowOffset,
+      name,
+      type: readTableCellText(cells, columns.typeIndex),
+      required: readTableCellText(cells, columns.requiredIndex),
+      description: readTableCellText(cells, columns.descriptionIndex),
+      depth: depthInfo.depth,
+      depthSource: depthInfo.source,
+      rawIndentPx: depthInfo.rawIndentPx
+    };
+  }
+
+  function applyFieldTableMetadata(tableNode, analysis) {
+    tableNode.dataset.ptmFieldTable = "true";
+    tableNode.dataset.ptmFieldNameIndex = String(analysis.columns.nameIndex);
+
+    const rowNodes = getTableRows(tableNode);
+    for (const row of analysis.rows) {
+      const targetRow = rowNodes[row.rowOffset];
+      if (targetRow) {
+        targetRow.dataset.ptmFieldPath = row.path;
+      }
+    }
+  }
+
+  function replaceStructuredFieldBlocks(originalRoot, clonedRoot, detectedPlatform) {
+    if (!["swagger-ui", "redoc"].includes(detectedPlatform)) {
+      return;
+    }
+
+    const originalBlocks = findStructuredFieldBlocks(originalRoot, detectedPlatform);
+    if (!originalBlocks.length) {
+      return;
+    }
+
+    const clonedBlocks = findStructuredFieldBlocks(clonedRoot, detectedPlatform);
+    const blockCount = Math.min(originalBlocks.length, clonedBlocks.length);
+
+    for (let index = 0; index < blockCount; index += 1) {
+      const rows = extractStructuredFieldRows(originalBlocks[index]);
+      if (rows.length < 2) {
+        continue;
+      }
+
+      const syntheticTable = buildStructuredFieldTable(clonedRoot.ownerDocument || document, rows);
+      clonedBlocks[index].replaceWith(syntheticTable);
+    }
+  }
+
+  function findStructuredFieldBlocks(rootNode, detectedPlatform) {
+    const selectors = detectedPlatform === "swagger-ui"
+      ? [
+          ".model-box",
+          ".model-container",
+          "[class*='model-box']",
+          "[class*='model-container']",
+          "[class*='schema']"
+        ]
+      : [
+          "[class*='schema']",
+          "[class*='model']",
+          "[class*='property-list']",
+          "[class*='field-list']"
+        ];
+
+    const candidates = [...rootNode.querySelectorAll(selectors.join(","))]
+      .filter((element) => isStructuredFieldBlockCandidate(element));
+
+    return candidates.filter((candidate) => !candidates.some((other) => other !== candidate && other.contains(candidate)));
+  }
+
+  function isStructuredFieldBlockCandidate(element) {
+    if (!(element instanceof Element)) {
+      return false;
+    }
+
+    const marker = `${element.className || ""} ${element.id || ""}`.toLowerCase();
+    if (!/(schema|model|property|field|param)/.test(marker)) {
+      return false;
+    }
+
+    const rows = getStructuredFieldRowCandidates(element);
+    return rows.length >= 2;
+  }
+
+  function extractStructuredFieldRows(blockNode) {
+    const rowNodes = getStructuredFieldRowCandidates(blockNode);
+    if (rowNodes.length < 2) {
+      return [];
+    }
+
+    const blockRect = blockNode.getBoundingClientRect();
+    const rawRows = rowNodes.map((rowNode) => buildStructuredFieldRowRecord(rowNode, blockRect)).filter(Boolean);
+    if (rawRows.length < 2) {
+      return [];
+    }
+
+    const indentProfile = createIndentProfile(rawRows.map((row) => row.rawIndentPx));
+    return fieldPathUtils.normalizeFieldRows(
+      rawRows.map((row) => {
+        const styleDepth = resolveStyleDepth(row.rawIndentPx, indentProfile);
+        const depth = Number.isFinite(row.depth) ? row.depth : styleDepth;
+        const depthSource = row.depthSource === "none" && styleDepth > 0 ? "style" : row.depthSource;
+
+        return {
+          name: row.name,
+          type: row.type,
+          required: row.required,
+          description: row.description,
+          depth,
+          depthSource
+        };
+      })
+    );
+  }
+
+  function buildStructuredFieldRowRecord(rowNode, blockRect) {
+    const nestedRows = getNestedStructuredFieldRows(rowNode);
+    const nameElement = findStructuredFieldNameElement(rowNode, nestedRows);
+    const name = cleanWhitespace(nameElement?.textContent || "");
+    if (!name) {
+      return null;
+    }
+
+    const depthInfo = inspectStructuredDepth(rowNode, nameElement, blockRect);
+    const typeElement = findStructuredFieldTypeElement(rowNode, nameElement, nestedRows);
+    const required = detectRequiredLabel(rowNode, nestedRows);
+    const description = extractStructuredDescription(rowNode, {
+      name,
+      type: cleanWhitespace(typeElement?.textContent || ""),
+      required
+    }, nestedRows);
+
+    return {
+      name,
+      type: cleanWhitespace(typeElement?.textContent || ""),
+      required,
+      description,
+      depth: depthInfo.depth,
+      depthSource: depthInfo.source,
+      rawIndentPx: depthInfo.rawIndentPx
+    };
+  }
+
+  function getStructuredFieldRowCandidates(blockNode) {
+    return [...blockNode.querySelectorAll(STRUCTURED_FIELD_ROW_SELECTORS.join(","))]
+      .filter((element) => {
+        if (!(element instanceof Element)) {
+          return false;
+        }
+
+        const nameElement = findStructuredFieldNameElement(element, getNestedStructuredFieldRows(element));
+        if (!nameElement) {
+          return false;
+        }
+
+        return cleanWhitespace(nameElement.textContent || "").length > 0;
+      });
+  }
+
+  function getNestedStructuredFieldRows(rowNode) {
+    return [...rowNode.querySelectorAll(STRUCTURED_FIELD_ROW_SELECTORS.join(","))]
+      .filter((element) => element !== rowNode);
+  }
+
+  function findStructuredFieldNameElement(rowNode, nestedRows = []) {
+    const selectors = [
+      ".prop-name",
+      "[class*='prop-name']",
+      ".property-name",
+      "[class*='property-name']",
+      "[data-property-name]",
+      "[data-field-name]",
+      "[class*='field-name']",
+      "[class*='param-name']",
+      "code"
+    ];
+
+    return findFirstTextfulElement(rowNode, selectors, null, nestedRows);
+  }
+
+  function findStructuredFieldTypeElement(rowNode, nameElement, nestedRows = []) {
+    const selectors = [
+      ".prop-type",
+      "[class*='prop-type']",
+      ".property-type",
+      "[class*='property-type']",
+      "[class*='field-type']",
+      "[class*='param-type']"
+    ];
+
+    return findFirstTextfulElement(rowNode, selectors, nameElement, nestedRows);
+  }
+
+  function detectRequiredLabel(rowNode, nestedRows = []) {
+    const indicator = findFirstTextfulElement(rowNode, [
+      "[class*='required']",
+      "[aria-label*='required' i]",
+      "[title*='required' i]"
+    ], null, nestedRows);
+
+    if (indicator) {
+      return "required";
+    }
+
+    if (nestedRows.length) {
+      return "";
+    }
+
+    const text = cleanWhitespace(rowNode.textContent || "");
+    return /\brequired\b/i.test(text) || /必填/u.test(text) ? "required" : "";
+  }
+
+  function extractStructuredDescription(rowNode, parts, nestedRows = []) {
+    const descriptionElement = findFirstTextfulElement(rowNode, [
+      "[class*='description']",
+      "[class*='desc']",
+      ".markdown p",
+      "p"
+    ], null, nestedRows);
+
+    if (descriptionElement) {
+      return cleanWhitespace(descriptionElement.textContent || "");
+    }
+
+    if (nestedRows.length) {
+      return "";
+    }
+
+    let remainder = cleanWhitespace(rowNode.textContent || "");
+    for (const value of [parts.name, parts.type, parts.required]) {
+      if (value) {
+        remainder = remainder.replace(value, "");
+      }
+    }
+
+    return cleanWhitespace(remainder);
+  }
+
+  function findFirstTextfulElement(rootNode, selectors, excludedNode = null, excludedRoots = []) {
+    for (const selector of selectors) {
+      const candidates = rootNode.matches?.(selector)
+        ? [rootNode, ...rootNode.querySelectorAll(selector)]
+        : [...rootNode.querySelectorAll(selector)];
+
+      for (const candidate of candidates) {
+        if (!(candidate instanceof Element) || candidate === excludedNode || excludedNode?.contains(candidate)) {
+          continue;
+        }
+
+        if (excludedRoots.some((excludedRoot) => excludedRoot === candidate || excludedRoot.contains(candidate))) {
+          continue;
+        }
+
+        if (cleanWhitespace(candidate.textContent || "")) {
+          return candidate;
+        }
+      }
+    }
+
+    return null;
+  }
+
+  function buildStructuredFieldTable(documentRef, rows) {
+    const columns = [{ key: "path", label: "Field" }];
+
+    if (rows.some((row) => row.type)) {
+      columns.push({ key: "type", label: "Type" });
+    }
+
+    if (rows.some((row) => row.required)) {
+      columns.push({ key: "required", label: "Required" });
+    }
+
+    if (rows.some((row) => row.description)) {
+      columns.push({ key: "description", label: "Description" });
+    }
+
+    const table = documentRef.createElement("table");
+    const thead = documentRef.createElement("thead");
+    const headerRow = documentRef.createElement("tr");
+
+    for (const column of columns) {
+      const cell = documentRef.createElement("th");
+      cell.textContent = column.label;
+      headerRow.appendChild(cell);
+    }
+
+    thead.appendChild(headerRow);
+    table.appendChild(thead);
+
+    const tbody = documentRef.createElement("tbody");
+    for (const row of rows) {
+      const bodyRow = documentRef.createElement("tr");
+      for (const column of columns) {
+        const cell = documentRef.createElement("td");
+        cell.textContent = column.key === "path" ? row.path : (row[column.key] || "");
+        bodyRow.appendChild(cell);
+      }
+      tbody.appendChild(bodyRow);
+    }
+
+    table.appendChild(tbody);
+    return table;
+  }
+
+  function getTableRows(tableNode) {
+    const rows = [];
+
+    if (tableNode.tHead) {
+      rows.push(...tableNode.tHead.rows);
+    }
+
+    for (const body of [...tableNode.tBodies]) {
+      rows.push(...body.rows);
+    }
+
+    for (const child of [...tableNode.children]) {
+      if (child.tagName?.toLowerCase() === "tr") {
+        rows.push(child);
+      }
+    }
+
+    if (tableNode.tFoot) {
+      rows.push(...tableNode.tFoot.rows);
+    }
+
+    return rows;
+  }
+
+  function getTableCells(rowNode) {
+    return [...rowNode.children].filter((child) => /^(th|td)$/i.test(child.tagName || ""));
+  }
+
+  function readTableCellText(cells, index) {
+    if (!Number.isInteger(index) || index < 0 || !cells[index]) {
+      return "";
+    }
+
+    return cleanWhitespace(cells[index].textContent || "");
+  }
+
+  function findMostIndentedTextElement(rootNode) {
+    const candidates = [rootNode, ...rootNode.querySelectorAll("*")];
+    let bestNode = rootNode;
+    let bestIndent = measureRelativeIndentPx(rootNode, rootNode);
+
+    for (const candidate of candidates) {
+      if (!(candidate instanceof Element) || !cleanWhitespace(candidate.textContent || "")) {
+        continue;
+      }
+
+      const indent = measureRelativeIndentPx(rootNode, candidate);
+      if (indent > bestIndent) {
+        bestIndent = indent;
+        bestNode = candidate;
+      }
+    }
+
+    return bestNode;
+  }
+
+  function inspectStructuredDepth(rowNode, subjectNode, base) {
+    const rawIndentPx = base instanceof DOMRect
+      ? measureRectRelativeIndentPx(base, subjectNode)
+      : measureRelativeIndentPx(base, subjectNode);
+
+    const attributeDepth = findDepthAttributeValue(rowNode, subjectNode);
+    if (Number.isFinite(attributeDepth)) {
+      return {
+        depth: attributeDepth,
+        source: "attr",
+        rawIndentPx
+      };
+    }
+
+    const textDepth = fieldPathUtils.extractLeadingDotDepth(subjectNode?.textContent || "");
+    if (textDepth > 0) {
+      return {
+        depth: textDepth,
+        source: "text",
+        rawIndentPx
+      };
+    }
+
+    return {
+      depth: null,
+      source: "none",
+      rawIndentPx
+    };
+  }
+
+  function findDepthAttributeValue(...nodes) {
+    for (const node of nodes) {
+      if (!(node instanceof Element)) {
+        continue;
+      }
+
+      const queue = [node, ...node.querySelectorAll("[aria-level], [data-depth], [data-level], [data-indent]")];
+      for (const candidate of queue) {
+        const ariaLevel = parseInteger(candidate.getAttribute("aria-level"));
+        if (Number.isFinite(ariaLevel)) {
+          return Math.max(0, ariaLevel - 1);
+        }
+
+        for (const attributeName of ["data-depth", "data-level", "data-indent"]) {
+          const value = parseInteger(candidate.getAttribute(attributeName));
+          if (Number.isFinite(value)) {
+            return Math.max(0, value);
+          }
+        }
+      }
+    }
+
+    return null;
+  }
+
+  function createIndentProfile(rawIndents) {
+    const finiteIndents = rawIndents.filter((value) => Number.isFinite(value));
+    if (!finiteIndents.length) {
+      return { baseline: 0, unit: 16 };
+    }
+
+    const baseline = Math.min(...finiteIndents);
+    const positiveSteps = finiteIndents
+      .map((value) => Math.max(0, value - baseline))
+      .filter((value) => value >= 6)
+      .sort((left, right) => left - right);
+
+    return {
+      baseline,
+      unit: positiveSteps[0] || 16
+    };
+  }
+
+  function resolveStyleDepth(rawIndentPx, indentProfile) {
+    if (!Number.isFinite(rawIndentPx)) {
+      return 0;
+    }
+
+    const normalizedIndent = Math.max(0, rawIndentPx - indentProfile.baseline);
+    if (normalizedIndent < 6) {
+      return 0;
+    }
+
+    return Math.max(0, Math.round(normalizedIndent / indentProfile.unit));
+  }
+
+  function measureRelativeIndentPx(baseNode, targetNode) {
+    if (!(baseNode instanceof Element) || !(targetNode instanceof Element)) {
+      return 0;
+    }
+
+    const baseRect = baseNode.getBoundingClientRect();
+    return measureRectRelativeIndentPx(baseRect, targetNode);
+  }
+
+  function measureRectRelativeIndentPx(baseRect, targetNode) {
+    if (!(targetNode instanceof Element)) {
+      return 0;
+    }
+
+    const targetRect = targetNode.getBoundingClientRect();
+    const computedStyle = window.getComputedStyle(targetNode);
+    const styleIndent = parsePx(computedStyle.marginLeft) +
+      parsePx(computedStyle.paddingLeft) +
+      Math.max(0, parsePx(computedStyle.textIndent));
+
+    return Math.max(0, targetRect.left - baseRect.left, styleIndent);
+  }
+
+  function parsePx(value) {
+    const parsed = Number.parseFloat(value || "0");
+    return Number.isFinite(parsed) ? parsed : 0;
+  }
+
+  function parseInteger(value) {
+    const parsed = Number.parseInt(value || "", 10);
+    return Number.isFinite(parsed) ? parsed : null;
+  }
+
   function renderTable(tableNode) {
-    const rows = [...tableNode.querySelectorAll("tr")]
-      .map((row) => [...row.children].map((cell) => cleanWhitespace(cell.textContent || "")))
+    const fieldNameIndex = Number.parseInt(tableNode.dataset.ptmFieldNameIndex || "-1", 10);
+    const rows = getTableRows(tableNode)
+      .map((row) => getTableCells(row).map((cell, cellIndex) => {
+        const fieldPath = row.dataset.ptmFieldPath;
+        const rawText = fieldPath && cellIndex === fieldNameIndex
+          ? fieldPath
+          : cleanWhitespace(cell.textContent || "");
+
+        return escapeMarkdownTableCell(rawText);
+      }))
       .filter((row) => row.length > 0);
 
     if (!rows.length) {
@@ -825,6 +1430,10 @@
     ];
 
     return `\n\n${markdownRows.join("\n")}\n\n`;
+  }
+
+  function escapeMarkdownTableCell(text) {
+    return cleanWhitespace(text).replace(/\|/g, "\\|");
   }
 
   function toBlockquote(text) {

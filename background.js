@@ -76,7 +76,7 @@ async function ensureContentScript(tabId) {
   try {
     await chrome.scripting.executeScript({
       target: { tabId },
-      files: ["content-script.js"]
+      files: ["field-path-utils.js", "content-script.js"]
     });
   } catch (error) {
     throw new Error(`Unable to access this page: ${toMessage(error)}`);
