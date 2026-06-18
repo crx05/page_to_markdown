@@ -117,22 +117,37 @@
     };
   }
 
+  function detectMixedMode(rows) {
+    let hasExplicitPath = false;
+    let hasRelativeDepth = false;
+
+    for (const row of rows) {
+      const preparedName = normalizeFieldLabel(row?.name || "");
+      if (looksLikeExplicitPath(preparedName.label)) {
+        hasExplicitPath = true;
+      }
+      if (STRONG_DEPTH_SOURCES.has(row?.depthSource)) {
+        hasRelativeDepth = true;
+      }
+      if (hasExplicitPath && hasRelativeDepth) {
+        break;
+      }
+    }
+
+    return { hasExplicitPath, hasRelativeDepth, isMixed: hasExplicitPath && hasRelativeDepth };
+  }
+
   function normalizeFieldRows(rows) {
     const normalized = [];
     const stack = [];
     let previousDepth = 0;
+    const modeInfo = detectMixedMode(rows);
 
     for (const row of rows) {
       const preparedName = normalizeFieldLabel(row?.name || "");
       const rawDepth = Number.isFinite(row?.depth) ? Math.max(0, Math.trunc(row.depth)) : null;
       const explicitDepth = preparedName.explicitDepth;
       let depth = rawDepth ?? explicitDepth ?? 0;
-
-      if (!normalized.length) {
-        depth = 0;
-      } else {
-        depth = Math.min(depth, previousDepth + 1, stack.length);
-      }
 
       const segment = applyArrayMarker(preparedName.label, row);
       const preserveExplicitPath = Boolean(
@@ -141,21 +156,49 @@
         looksLikeExplicitPath(segment)
       );
 
-      const segments = preserveExplicitPath
-        ? applyArrayMarkerToPath(splitPathSegments(segment), row)
-        : stack.slice(0, depth).concat(segment);
+      if (preserveExplicitPath) {
+        // 显式路径：更新栈为其完整路径
+        const segments = applyArrayMarkerToPath(splitPathSegments(segment), row);
+        stack.length = 0;
+        stack.push(...segments);
+        previousDepth = Math.max(0, segments.length - 1);
 
-      stack.length = 0;
-      stack.push(...segments);
-      previousDepth = preserveExplicitPath ? Math.max(0, segments.length - 1) : depth;
+        normalized.push({
+          ...row,
+          depth: previousDepth,
+          path: joinPathSegments(segments),
+          segment: segments[segments.length - 1],
+          explicitDepth
+        });
+      } else {
+        // 深度钳位逻辑改进
+        if (!normalized.length) {
+          depth = 0;
+        } else if (STRONG_DEPTH_SOURCES.has(row?.depthSource || "")) {
+          // 强信号源（attr/style）：允许更大跳跃，但不超过栈长度
+          depth = Math.min(depth, stack.length);
+        } else if (explicitDepth > 0) {
+          // 前导点标记：遵循explicitDepth
+          depth = Math.min(explicitDepth, stack.length);
+        } else {
+          // 弱信号（none）：保守策略，仅允许+1
+          depth = Math.min(depth, previousDepth + 1, stack.length);
+        }
 
-      normalized.push({
-        ...row,
-        depth,
-        path: joinPathSegments(segments),
-        segment,
-        explicitDepth
-      });
+        // 相对深度模式：构建路径
+        const segments = stack.slice(0, depth).concat(segment);
+        stack.length = 0;
+        stack.push(...segments);
+        previousDepth = depth;
+
+        normalized.push({
+          ...row,
+          depth,
+          path: joinPathSegments(segments),
+          segment,
+          explicitDepth
+        });
+      }
     }
 
     return normalized;
@@ -194,7 +237,17 @@
 
   function looksLikeExplicitPath(text) {
     const normalized = cleanWhitespace(text).replace(/\[\s*\]/g, "[]");
-    return /^[A-Za-z0-9_\-$]+(?:\[\])?(?:\.[A-Za-z0-9_\-$]+(?:\[\])?)+$/.test(normalized);
+
+    // 至少包含一个点分隔符
+    if (!normalized.includes(".")) {
+      return false;
+    }
+
+    // 放宽字符集：支持字母数字、下划线、连字符、美元符、空格、Unicode字符（包括中文）、数组索引
+    // \w 包含 [A-Za-z0-9_]，一-鿿 是常用中文范围，぀-ヿ 是日文假名
+    const relaxedPattern = /^[\w\-$一-鿿぀-ヿ\s]+(?:\[\d*\])*(?:\.[\w\-$一-鿿぀-ヿ\s]+(?:\[\d*\])*)+$/;
+
+    return relaxedPattern.test(normalized);
   }
 
   function splitPathSegments(text) {

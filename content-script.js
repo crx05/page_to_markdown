@@ -429,6 +429,18 @@
       return "redoc";
     }
 
+    if (doc.querySelector(".apifox-app, [class*='apifox']")) {
+      return "apifox";
+    }
+
+    if (doc.querySelector("[class*='yapi'], .yapi-container")) {
+      return "yapi";
+    }
+
+    if (doc.querySelector("[class*='postman'], .postman-docs")) {
+      return "postman";
+    }
+
     return "unknown";
   }
 
@@ -948,10 +960,7 @@
   }
 
   function replaceStructuredFieldBlocks(originalRoot, clonedRoot, detectedPlatform) {
-    if (!["swagger-ui", "redoc"].includes(detectedPlatform)) {
-      return;
-    }
-
+    // 移除平台白名单限制，允许所有平台尝试通用schema检测
     const originalBlocks = findStructuredFieldBlocks(originalRoot, detectedPlatform);
     if (!originalBlocks.length) {
       return;
@@ -972,20 +981,44 @@
   }
 
   function findStructuredFieldBlocks(rootNode, detectedPlatform) {
-    const selectors = detectedPlatform === "swagger-ui"
-      ? [
-          ".model-box",
-          ".model-container",
-          "[class*='model-box']",
-          "[class*='model-container']",
-          "[class*='schema']"
-        ]
-      : [
-          "[class*='schema']",
-          "[class*='model']",
-          "[class*='property-list']",
-          "[class*='field-list']"
-        ];
+    // 平台特定选择器映射
+    const PLATFORM_SELECTORS = {
+      "swagger-ui": [
+        ".model-box",
+        ".model-container",
+        "[class*='model-box']",
+        "[class*='model-container']",
+        "[class*='schema']"
+      ],
+      "redoc": [
+        "[class*='schema']",
+        "[class*='model']"
+      ],
+      "apifox": [
+        ".schema-item",
+        "[class*='param']",
+        "[class*='schema']"
+      ],
+      "yapi": [
+        ".schema-table",
+        ".param-box",
+        "[class*='param']"
+      ],
+      "postman": [
+        ".schema-body",
+        "[class*='property']",
+        "[class*='schema']"
+      ],
+      "unknown": [
+        "[class*='schema']",
+        "[class*='model']",
+        "[class*='property-list']",
+        "[class*='field-list']",
+        "[class*='param']"
+      ]
+    };
+
+    const selectors = PLATFORM_SELECTORS[detectedPlatform] || PLATFORM_SELECTORS["unknown"];
 
     const candidates = [...rootNode.querySelectorAll(selectors.join(","))]
       .filter((element) => isStructuredFieldBlockCandidate(element));
