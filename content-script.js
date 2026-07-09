@@ -1021,7 +1021,10 @@
     const selectors = PLATFORM_SELECTORS[detectedPlatform] || PLATFORM_SELECTORS["unknown"];
 
     const candidates = [...rootNode.querySelectorAll(selectors.join(","))]
-      .filter((element) => isStructuredFieldBlockCandidate(element));
+      .filter((element) =>
+        element.tagName.toLowerCase() !== 'table' &&  // 排除表格元素，避免与 annotateStructuredTables 重复处理
+        isStructuredFieldBlockCandidate(element)
+      );
 
     return candidates.filter((candidate) => !candidates.some((other) => other !== candidate && other.contains(candidate)));
   }
