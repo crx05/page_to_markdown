@@ -12,32 +12,54 @@
         <div class="meta-copy">
           <p class="eyebrow">Preview</p>
           <h1 id="pageTitle">Waiting for content</h1>
-          <a id="pageUrl" class="source-link" href="#" target="_blank" rel="noreferrer noopener">
-            Source URL
-          </a>
+          <a id="pageUrl" class="source-link" href="#" target="_blank" rel="noreferrer noopener">Source URL</a>
           <div class="meta-badges">
             <span id="modeBadge" class="meta-badge">Mode</span>
             <span id="platformBadge" class="meta-badge">Platform</span>
+            <span id="confidenceBadge" class="meta-badge">Confidence</span>
+          </div>
+          <div id="warningPanel" class="warning-panel" hidden></div>
+        </div>
+
+        <div class="action-card">
+          <label class="field-label" for="filenameInput">Filename</label>
+          <input id="filenameInput" class="filename-input" type="text" value="page.md">
+          <div class="action-grid">
+            <button id="downloadButton" class="primary-button" type="button">Download</button>
+            <button id="copyButton" class="secondary-button" type="button">Copy Markdown</button>
+            <button id="reextractButton" class="secondary-button full-row" type="button">Re-extract Source Tab</button>
+          </div>
+          <p id="actionStatus" class="action-status" aria-live="polite"></p>
+        </div>
+      </section>
+
+      <section class="workspace-panel">
+        <div class="workspace-toolbar">
+          <div class="view-tabs" role="tablist" aria-label="Preview view">
+            <button id="editTab" class="view-tab is-active" type="button" role="tab" aria-selected="true">Edit</button>
+            <button id="previewTab" class="view-tab" type="button" role="tab" aria-selected="false">Preview</button>
+          </div>
+          <div class="workspace-stats">
+            <span id="statsText">0 chars</span>
+            <span id="capturedText">Not captured yet</span>
+            <span id="saveStatus">Not saved</span>
           </div>
         </div>
 
-        <div class="download-card">
-          <label class="field-label" for="filenameInput">Filename</label>
-          <input id="filenameInput" class="filename-input" type="text" value="page.md">
-          <button id="downloadButton" class="download-button" type="button">Download Markdown</button>
-          <p id="downloadStatus" class="download-status" aria-live="polite"></p>
+        <div id="workspace" class="workspace" data-view="edit">
+          <section class="editor-pane" aria-label="Markdown editor">
+            <textarea id="markdownEditor" class="markdown-editor" spellcheck="false"></textarea>
+          </section>
+          <section class="preview-pane" aria-label="Rendered Markdown preview">
+            <article id="renderedPreview" class="markdown-preview"></article>
+          </section>
         </div>
-      </section>
-
-      <section class="editor-panel">
-        <div class="editor-toolbar">
-          <span id="statsText">0 chars</span>
-          <span id="capturedText">Not captured yet</span>
-        </div>
-        <textarea id="markdownEditor" class="markdown-editor" spellcheck="false"></textarea>
       </section>
     </main>
 
+    <script src="vendor/marked.umd.js"></script>
+    <script src="vendor/purify.min.js"></script>
+    <script src="preview-renderer.js"></script>
     <script src="preview.js"></script>
   </body>
 </html>

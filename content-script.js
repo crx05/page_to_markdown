@@ -47,6 +47,9 @@
   ];
 
   const fieldPathUtils = globalThis.PageToMarkdownFieldPathUtils || null;
+  const markdownConverter = globalThis.PageToMarkdownConverter || null;
+  const platformAdapterRegistry = globalThis.PageToMarkdownPlatformAdapters || null;
+  const extractionCore = globalThis.PageToMarkdownExtractionCore || null;
   const STRUCTURED_FIELD_ROW_SELECTORS = [
     ".property-row",
     "[class*='property-row']",
@@ -96,9 +99,10 @@
   function createManualSelectionSession() {
     const overlayRoot = document.createElement("div");
     overlayRoot.id = "page-to-markdown-selector-root";
-    overlayRoot.innerHTML = `
+    const overlay = overlayRoot.attachShadow({ mode: "open" });
+    overlay.innerHTML = `
       <style>
-        #page-to-markdown-selector-root {
+        :host {
           position: fixed;
           inset: 0;
           z-index: 2147483647;
@@ -201,18 +205,21 @@
 
     document.documentElement.appendChild(overlayRoot);
 
-    const highlightBox = overlayRoot.querySelector(".ptm-highlight");
-    const toolbar = overlayRoot.querySelector(".ptm-toolbar");
-    const selectionLabel = overlayRoot.querySelector(".ptm-selection-label");
-    const confirmButton = overlayRoot.querySelector(".ptm-confirm");
-    const reselectButton = overlayRoot.querySelector(".ptm-reselect");
-    const cancelButton = overlayRoot.querySelector(".ptm-cancel");
-    const toast = overlayRoot.querySelector(".ptm-toast");
+    const highlightBox = overlay.querySelector(".ptm-highlight");
+    const toolbar = overlay.querySelector(".ptm-toolbar");
+    const selectionLabel = overlay.querySelector(".ptm-selection-label");
+    const confirmButton = overlay.querySelector(".ptm-confirm");
+    const reselectButton = overlay.querySelector(".ptm-reselect");
+    const cancelButton = overlay.querySelector(".ptm-cancel");
+    const toast = overlay.querySelector(".ptm-toast");
 
     let hoverCandidate = null;
     let selectedNode = null;
     let lockedSelection = false;
     let toastTimer = 0;
+    let pointerFrame = 0;
+    let pendingPointerTarget = null;
+    const manualPlatform = detectPlatform(document);
 
     document.addEventListener("mousemove", handlePointerMove, true);
     document.addEventListener("click", handleDocumentClick, true);
@@ -222,7 +229,7 @@
     reselectButton.addEventListener("click", handleReselectClick);
     cancelButton.addEventListener("click", handleCancelClick);
 
-    updateHighlight(findInitialCandidate());
+    updateHighlight(findInitialCandidate(manualPlatform));
 
     return cleanup;
 
@@ -231,12 +238,21 @@
         return;
       }
 
-      const candidate = findSelectableCandidate(event.target);
-      updateHighlight(candidate);
+      pendingPointerTarget = event.target;
+      if (pointerFrame) {
+        return;
+      }
+
+      pointerFrame = window.requestAnimationFrame(() => {
+        pointerFrame = 0;
+        const candidate = findSelectableCandidate(pendingPointerTarget, manualPlatform);
+        pendingPointerTarget = null;
+        updateHighlight(candidate);
+      });
     }
 
     function handleDocumentClick(event) {
-      if (overlayRoot.contains(event.target)) {
+      if (event.composedPath().includes(overlayRoot)) {
         return;
       }
 
@@ -246,7 +262,7 @@
         return;
       }
 
-      const candidate = findSelectableCandidate(event.target);
+      const candidate = findSelectableCandidate(event.target, manualPlatform);
       if (!candidate) {
         return;
       }
@@ -290,7 +306,7 @@
       showToast("Generating Markdown from the selected content...", "default");
 
       try {
-        const payload = extractApiDocument({ selectedRoot: selectedNode, forceManual: true });
+        const payload = await extractApiDocument({ selectedRoot: selectedNode, forceManual: true });
 
         const response = await chrome.runtime.sendMessage({
           type: "page-to-markdown:manual-complete",
@@ -319,7 +335,7 @@
       confirmButton.disabled = false;
       reselectButton.disabled = false;
       cancelButton.disabled = false;
-      updateHighlight(hoverCandidate || findInitialCandidate());
+      updateHighlight(hoverCandidate || findInitialCandidate(manualPlatform));
     }
 
     function handleCancelClick(event) {
@@ -347,6 +363,10 @@
 
       if (toastTimer) {
         window.clearTimeout(toastTimer);
+      }
+
+      if (pointerFrame) {
+        window.cancelAnimationFrame(pointerFrame);
       }
     }
 
@@ -381,74 +401,79 @@
     }
   }
 
-  function extractApiDocument(options = {}) {
+  async function extractApiDocument(options = {}) {
     const detectedPlatform = detectPlatform(document);
-    const selectedRoot = options.selectedRoot || pickContentRoot(document, detectedPlatform);
-    if (!selectedRoot) {
-      throw new Error("Unable to locate API documentation content on this page.");
+    const expansion = await expandDocumentationSafely(
+      getPlatformAdapter(detectedPlatform),
+      options.selectedRoot || document
+    );
+
+    try {
+      const selection = options.selectedRoot
+        ? {
+            node: options.selectedRoot,
+            confidence: "high",
+            rootReason: `manual:${describeNode(options.selectedRoot)}`,
+            warnings: []
+          }
+        : selectContentRoot(document, detectedPlatform);
+      const selectedRoot = selection.node;
+      if (!selectedRoot) {
+        throw new Error("Unable to locate API documentation content on this page.");
+      }
+
+      const clonedRoot = selectedRoot.cloneNode(true);
+      preprocessStructuredContent(selectedRoot, clonedRoot, detectedPlatform);
+      pruneNode(clonedRoot, detectedPlatform);
+
+      const title = pickDocumentTitle(selectedRoot);
+      const markdown = convertNodeToMarkdown(clonedRoot).trim();
+
+      if (!markdown || markdown.length < 40) {
+        throw new Error("The selected content did not contain enough API documentation to export.");
+      }
+
+      const extractionMode = options.forceManual
+        ? "manual-selection"
+        : detectedPlatform === "unknown"
+          ? "auto-generic"
+          : "auto-platform";
+      const warnings = [...selection.warnings, ...expansion.warnings];
+
+      return {
+        title,
+        url: sanitizeSourceUrl(window.location.href),
+        markdown: prependFrontMatter(title, sanitizeSourceUrl(window.location.href), markdown, extractionMode, detectedPlatform),
+        filename: `${sanitizeFilename(title || "api-documentation")}.md`,
+        capturedAt: new Date().toISOString(),
+        extractionMode,
+        detectedPlatform,
+        adapterId: detectedPlatform,
+        confidence: selection.confidence,
+        rootReason: selection.rootReason,
+        warnings,
+        expandedCount: expansion.expandedCount
+      };
+    } finally {
+      await expansion.restore();
     }
-
-    const clonedRoot = selectedRoot.cloneNode(true);
-    preprocessStructuredContent(selectedRoot, clonedRoot, detectedPlatform);
-    pruneNode(clonedRoot, detectedPlatform);
-
-    const title = pickDocumentTitle(selectedRoot);
-    const markdown = convertNodeToMarkdown(clonedRoot).trim();
-
-    if (!markdown || markdown.length < 40) {
-      throw new Error("The selected content did not contain enough API documentation to export.");
-    }
-
-    const extractionMode = options.forceManual
-      ? "manual-selection"
-      : detectedPlatform === "unknown"
-        ? "auto-generic"
-        : "auto-platform";
-
-    return {
-      title,
-      url: window.location.href,
-      markdown: prependFrontMatter(title, window.location.href, markdown, extractionMode, detectedPlatform),
-      filename: `${sanitizeFilename(title || "api-documentation")}.md`,
-      capturedAt: new Date().toISOString(),
-      extractionMode,
-      detectedPlatform
-    };
   }
 
   function detectPlatform(doc) {
-    if (doc.querySelector(".swagger-ui")) {
-      return "swagger-ui";
-    }
-
-    if (
-      doc.querySelector("redoc") ||
-      doc.querySelector("#redoc-container") ||
-      (doc.querySelector("[class*='menu-content']") && doc.querySelector("[class*='api-content']"))
-    ) {
-      return "redoc";
-    }
-
-    if (doc.querySelector(".apifox-app, [class*='apifox']")) {
-      return "apifox";
-    }
-
-    if (doc.querySelector("[class*='yapi'], .yapi-container")) {
-      return "yapi";
-    }
-
-    if (doc.querySelector("[class*='postman'], .postman-docs")) {
-      return "postman";
-    }
-
-    return "unknown";
+    return platformAdapterRegistry?.detect(doc)?.id || "unknown";
   }
 
   function pickContentRoot(doc, detectedPlatform) {
-    const candidates = [];
+    return selectContentRoot(doc, detectedPlatform).node;
+  }
+
+  function selectContentRoot(doc, detectedPlatform) {
+    const candidates = new Set();
 
     for (const selector of getPlatformSelectors(detectedPlatform)) {
-      candidates.push(...doc.querySelectorAll(selector));
+      for (const node of doc.querySelectorAll(selector)) {
+        candidates.add(node);
+      }
     }
 
     const genericSelectors = [
@@ -469,49 +494,243 @@
     ];
 
     for (const selector of genericSelectors) {
-      candidates.push(...doc.querySelectorAll(selector));
-    }
-
-    candidates.push(...doc.querySelectorAll("section, article, main, div"));
-
-    let bestNode = null;
-    let bestScore = -Infinity;
-
-    for (const node of candidates) {
-      const score = scoreNode(node, detectedPlatform);
-      if (score > bestScore) {
-        bestNode = node;
-        bestScore = score;
+      for (const node of doc.querySelectorAll(selector)) {
+        candidates.add(node);
       }
     }
 
-    const bodyScore = scoreNode(doc.body, detectedPlatform);
-    if (!bestNode || bodyScore > bestScore) {
-      bestNode = doc.body;
+    for (const node of doc.querySelectorAll("[class*='api-content'], [class*='doc-content'], [class*='documentation'], [id*='api-content'], [id*='documentation']")) {
+      candidates.add(node);
     }
 
-    return bestNode;
+    const ranked = [...candidates]
+      .map((node) => ({ node, score: scoreNode(node, detectedPlatform) }))
+      .filter((entry) => Number.isFinite(entry.score))
+      .sort((left, right) => right.score - left.score);
+
+    if (!ranked.length) {
+      const bodyScore = scoreNode(doc.body, detectedPlatform);
+      return {
+        node: doc.body,
+        confidence: "low",
+        rootReason: `fallback:body:${Math.round(bodyScore)}`,
+        warnings: ["Automatic extraction could not find a focused documentation root; the page body was used."]
+      };
+    }
+
+    let best = ranked[0];
+    const focusedChild = ranked.find((entry) =>
+      entry !== best &&
+      best.node.contains(entry.node) &&
+      entry.score >= best.score * 0.82
+    );
+    if (focusedChild) {
+      best = focusedChild;
+    }
+
+    const runnerUp = ranked.find((entry) => entry.node !== best.node);
+    const adapterMatched = getPlatformSelectors(detectedPlatform).some((selector) => best.node.matches?.(selector));
+    const confidence = extractionCore?.classifyConfidence({
+      score: best.score,
+      runnerUpScore: runnerUp?.score,
+      adapterMatched
+    }) || (adapterMatched ? "high" : "medium");
+    const warnings = confidence === "low"
+      ? ["The automatically selected documentation root has low confidence. Review the result or use manual selection."]
+      : [];
+
+    return {
+      node: best.node,
+      confidence,
+      rootReason: `score:${Math.round(best.score)}:${describeNode(best.node)}`,
+      warnings
+    };
   }
 
   function getPlatformSelectors(detectedPlatform) {
-    if (detectedPlatform === "swagger-ui") {
-      return [
-        ".swagger-ui .swagger-container",
-        ".swagger-ui .wrapper",
-        ".swagger-ui"
-      ];
+    return getPlatformAdapter(detectedPlatform).rootSelectors || [];
+  }
+
+  function getPlatformAdapter(detectedPlatform) {
+    return platformAdapterRegistry?.getById(detectedPlatform) || {
+      id: "unknown",
+      label: "Generic",
+      rootSelectors: [],
+      noiseSelectors: [],
+      structuredBlockSelectors: [],
+      expandSelectors: [],
+      resolveFieldDepth: null,
+      isExpansionControl: null,
+      isExpanded: null
+    };
+  }
+
+  async function expandDocumentationSafely(adapter, scope) {
+    const warnings = [];
+    const openedControls = [];
+    const openedSet = new Set();
+    const scrollPosition = { x: window.scrollX, y: window.scrollY };
+    const startedAt = Date.now();
+    const maxControls = 200;
+    const maxDurationMs = 5000;
+    const maxPasses = 20;
+
+    if (!adapter.expandSelectors?.length) {
+      return createExpansionResult();
     }
 
-    if (detectedPlatform === "redoc") {
-      return [
-        "[class*='api-content']",
-        "#redoc-container main",
-        "redoc main",
-        "redoc"
-      ];
+    for (let pass = 0; pass < maxPasses; pass += 1) {
+      if (Date.now() - startedAt >= maxDurationMs || openedControls.length >= maxControls) {
+        break;
+      }
+
+      const controls = collectExpansionControls(scope, adapter.expandSelectors)
+        .filter((control) => !openedSet.has(control) && isSafeExpansionControl(control, adapter));
+      if (!controls.length) {
+        break;
+      }
+
+      for (const control of controls) {
+        if (openedControls.length >= maxControls || Date.now() - startedAt >= maxDurationMs) {
+          break;
+        }
+
+        openedSet.add(control);
+        try {
+          control.click();
+          openedControls.push(control);
+        } catch {
+          // Detached or framework-owned controls are ignored.
+        }
+      }
+
+      const remainingMs = Math.max(0, maxDurationMs - (Date.now() - startedAt));
+      if (remainingMs > 0) {
+        await waitForDomToSettle(scope, Math.min(300, remainingMs), remainingMs);
+      }
     }
 
-    return [];
+    if (openedControls.length >= maxControls) {
+      warnings.push(`Expansion stopped after ${maxControls} documentation controls.`);
+    }
+    if (Date.now() - startedAt >= maxDurationMs) {
+      warnings.push("Expansion reached the 5 second limit; currently loaded content was exported.");
+    }
+
+    return createExpansionResult();
+
+    function createExpansionResult() {
+      return {
+        expandedCount: openedControls.length,
+        warnings,
+        async restore() {
+          for (const control of openedControls.slice().reverse()) {
+            if (!control.isConnected || !isCurrentlyExpanded(control, adapter)) {
+              continue;
+            }
+            try {
+              control.click();
+            } catch {
+              // Best-effort restoration must not fail an export.
+            }
+          }
+          try {
+            window.scrollTo(scrollPosition.x, scrollPosition.y);
+          } catch {
+            // Some embedded documents do not expose a scrollable window.
+          }
+        }
+      };
+    }
+  }
+
+  function collectExpansionControls(scope, selectors) {
+    const controls = new Set();
+    for (const selector of selectors) {
+      if (scope instanceof Element && scope.matches(selector)) {
+        controls.add(scope);
+      }
+      for (const node of scope.querySelectorAll?.(selector) || []) {
+        controls.add(node);
+      }
+    }
+    return [...controls];
+  }
+
+  function isSafeExpansionControl(control, adapter) {
+    if (!(control instanceof Element) || control.closest("form")) {
+      return false;
+    }
+
+    const marker = `${control.className || ""} ${control.id || ""} ${control.getAttribute("aria-label") || ""} ${control.textContent || ""}`.toLowerCase();
+    if (/(try\s*it\s*out|execute|send(?:\s+request)?|submit|login|sign\s*in|download|authorize|logout|make\s+request)/i.test(marker)) {
+      return false;
+    }
+
+    const tagName = control.tagName.toLowerCase();
+    const actsLikeButton = tagName === "button" || tagName === "summary" || control.getAttribute("role") === "button" || control.classList.contains("opblock-summary");
+    const adapterApproved = callAdapterBoolean(adapter?.isExpansionControl, control) === true;
+    return (actsLikeButton || adapterApproved) && !isCurrentlyExpanded(control, adapter);
+  }
+
+  function isCurrentlyExpanded(control, adapter) {
+    const adapterState = callAdapterBoolean(adapter?.isExpanded, control);
+    if (typeof adapterState === "boolean") {
+      return adapterState;
+    }
+
+    const ariaExpanded = control.getAttribute("aria-expanded");
+    if (ariaExpanded) {
+      return ariaExpanded === "true";
+    }
+    const opblock = control.closest(".opblock");
+    if (opblock) {
+      return opblock.classList.contains("is-open");
+    }
+    return false;
+  }
+
+  function callAdapterBoolean(callback, control) {
+    if (typeof callback !== "function") {
+      return null;
+    }
+
+    try {
+      const result = callback(control);
+      return typeof result === "boolean" ? result : null;
+    } catch {
+      return null;
+    }
+  }
+
+  function waitForDomToSettle(scope, quietMs, timeoutMs) {
+    return new Promise((resolve) => {
+      const observedRoot = scope instanceof Document ? scope.documentElement : scope;
+      if (!observedRoot || typeof MutationObserver !== "function") {
+        window.setTimeout(resolve, Math.min(quietMs, timeoutMs));
+        return;
+      }
+
+      let quietTimer = 0;
+      let timeoutTimer = 0;
+      const observer = new MutationObserver(scheduleQuietFinish);
+
+      function finish() {
+        observer.disconnect();
+        window.clearTimeout(quietTimer);
+        window.clearTimeout(timeoutTimer);
+        resolve();
+      }
+
+      function scheduleQuietFinish() {
+        window.clearTimeout(quietTimer);
+        quietTimer = window.setTimeout(finish, quietMs);
+      }
+
+      observer.observe(observedRoot, { childList: true, subtree: true, attributes: true });
+      scheduleQuietFinish();
+      timeoutTimer = window.setTimeout(finish, timeoutMs);
+    });
   }
 
   function pruneNode(root, detectedPlatform) {
@@ -554,11 +773,7 @@
       ".version-switcher"
     ];
 
-    const platformSelectors = detectedPlatform === "swagger-ui"
-      ? [".topbar", ".swagger-ui .scheme-container .download-url-wrapper"]
-      : detectedPlatform === "redoc"
-        ? ["[class*='menu-content']", "[class*='search-box']", "[class*='side-menu']"]
-        : [];
+    const platformSelectors = getPlatformAdapter(detectedPlatform).noiseSelectors || [];
 
     for (const node of root.querySelectorAll([...baseSelectors, ...platformSelectors].join(","))) {
       node.remove();
@@ -603,34 +818,28 @@
       .filter((element) => /[{}\[\]":]/.test(element.textContent || ""))
       .length;
 
-    let score =
-      text.length * 0.55 +
-      paragraphCount * 80 +
-      headingCount * 130 +
-      preCount * 180 +
-      codeCount * 36 +
-      tableCount * 160 +
-      methodCount * 120 +
-      pathCount * 100 +
-      keywordCount * 70 +
-      codeLikeBlockCount * 110;
+    const adapter = getPlatformAdapter(detectedPlatform);
+    const adapterMatched = adapter.rootSelectors.some((selector) => node.matches(selector));
 
-    score -= linkDensity * 1500;
-    score -= linkCount * 6;
-    score -= listCount * 10;
-    score -= buttonCount * 35;
-    score -= navKeywordCount * 220;
-    score -= markerPenalty(marker);
-
-    if (detectedPlatform === "swagger-ui" && node.matches(".swagger-ui, .swagger-ui .swagger-container, .swagger-ui .wrapper")) {
-      score += 900;
-    }
-
-    if (detectedPlatform === "redoc" && node.matches("[class*='api-content'], redoc")) {
-      score += 950;
-    }
-
-    return score;
+    return extractionCore?.scoreCandidateMetrics({
+      textLength: text.length,
+      paragraphCount,
+      headingCount,
+      preCount,
+      codeCount,
+      tableCount,
+      linkCount,
+      listCount,
+      buttonCount,
+      linkDensity,
+      methodCount,
+      pathCount,
+      keywordCount,
+      navKeywordCount,
+      codeLikeBlockCount,
+      markerPenalty: markerPenalty(marker),
+      adapterMatched
+    }) ?? text.length;
   }
 
   function markerPenalty(marker) {
@@ -701,6 +910,10 @@
   }
 
   function convertNodeToMarkdown(node) {
+    if (markdownConverter?.convertNodeToMarkdown) {
+      return markdownConverter.convertNodeToMarkdown(node);
+    }
+
     const context = {
       listDepth: 0
     };
@@ -835,17 +1048,18 @@
       return;
     }
 
-    annotateStructuredTables(originalRoot, clonedRoot);
+    const adapter = getPlatformAdapter(detectedPlatform);
+    annotateStructuredTables(originalRoot, clonedRoot, adapter);
     replaceStructuredFieldBlocks(originalRoot, clonedRoot, detectedPlatform);
   }
 
-  function annotateStructuredTables(originalRoot, clonedRoot) {
+  function annotateStructuredTables(originalRoot, clonedRoot, adapter) {
     const originalTables = [...originalRoot.querySelectorAll("table")];
     const clonedTables = [...clonedRoot.querySelectorAll("table")];
     const tableCount = Math.min(originalTables.length, clonedTables.length);
 
     for (let index = 0; index < tableCount; index += 1) {
-      const analysis = analyzeFieldTable(originalTables[index]);
+      const analysis = analyzeFieldTable(originalTables[index], adapter);
       if (!analysis) {
         continue;
       }
@@ -854,7 +1068,7 @@
     }
   }
 
-  function analyzeFieldTable(tableNode) {
+  function analyzeFieldTable(tableNode, adapter) {
     const rowNodes = getTableRows(tableNode);
     if (rowNodes.length < 2) {
       return null;
@@ -876,7 +1090,7 @@
 
     const rawRows = rowNodes
       .slice(1)
-      .map((rowNode, rowOffset) => buildFieldTableRowRecord(rowNode, rowOffset + 1, columns))
+      .map((rowNode, rowOffset) => buildFieldTableRowRecord(rowNode, rowOffset + 1, columns, adapter))
       .filter(Boolean);
 
     if (!rawRows.length) {
@@ -919,20 +1133,20 @@
     };
   }
 
-  function buildFieldTableRowRecord(rowNode, rowOffset, columns) {
+  function buildFieldTableRowRecord(rowNode, rowOffset, columns, adapter) {
     const cells = getTableCells(rowNode);
     const nameCell = cells[columns.nameIndex];
     if (!nameCell) {
       return null;
     }
 
-    const nameAnchor = findMostIndentedTextElement(nameCell);
-    const name = cleanWhitespace((nameAnchor?.textContent || nameCell.textContent || ""));
+    const nameAnchor = findFieldNameTextElement(nameCell);
+    const name = readFieldNameValue(nameAnchor || nameCell);
     if (!name) {
       return null;
     }
 
-    const depthInfo = inspectStructuredDepth(rowNode, nameAnchor || nameCell, nameCell);
+    const depthInfo = inspectStructuredDepth(rowNode, nameAnchor || nameCell, nameCell, adapter);
 
     return {
       rowOffset,
@@ -944,6 +1158,42 @@
       depthSource: depthInfo.source,
       rawIndentPx: depthInfo.rawIndentPx
     };
+  }
+
+  function findFieldNameTextElement(nameCell) {
+    const explicitFromCore = extractionCore?.findExplicitFieldNameElement(nameCell, fieldPathUtils);
+    if (explicitFromCore) {
+      return explicitFromCore;
+    }
+
+    const preferredSelectors = [
+      "[data-field-path]",
+      "[data-path]",
+      "[data-property-name]",
+      "[data-field-name]",
+      "[class*='field-path']",
+      "[class*='field-name']",
+      "[class*='param-name']",
+      "[class*='property-name']",
+      "code"
+    ];
+    const candidates = [nameCell, ...nameCell.querySelectorAll(preferredSelectors.join(","))];
+    const explicitPathElement = candidates.find((candidate) => {
+      const value = readFieldNameValue(candidate);
+      return fieldPathUtils.looksLikeExplicitPath(fieldPathUtils.normalizeFieldLabel(value).label);
+    });
+    return explicitPathElement || findMostIndentedTextElement(nameCell);
+  }
+
+  function readFieldNameValue(element) {
+    return extractionCore?.readFieldNameValue(element) || cleanWhitespace(
+      element?.getAttribute?.("data-field-path") ||
+      element?.getAttribute?.("data-path") ||
+      element?.getAttribute?.("data-property-name") ||
+      element?.getAttribute?.("data-field-name") ||
+      element?.textContent ||
+      ""
+    );
   }
 
   function applyFieldTableMetadata(tableNode, analysis) {
@@ -961,6 +1211,7 @@
 
   function replaceStructuredFieldBlocks(originalRoot, clonedRoot, detectedPlatform) {
     // 移除平台白名单限制，允许所有平台尝试通用schema检测
+    const adapter = getPlatformAdapter(detectedPlatform);
     const originalBlocks = findStructuredFieldBlocks(originalRoot, detectedPlatform);
     if (!originalBlocks.length) {
       return;
@@ -970,7 +1221,7 @@
     const blockCount = Math.min(originalBlocks.length, clonedBlocks.length);
 
     for (let index = 0; index < blockCount; index += 1) {
-      const rows = extractStructuredFieldRows(originalBlocks[index]);
+      const rows = extractStructuredFieldRows(originalBlocks[index], adapter);
       if (rows.length < 2) {
         continue;
       }
@@ -981,44 +1232,11 @@
   }
 
   function findStructuredFieldBlocks(rootNode, detectedPlatform) {
-    // 平台特定选择器映射
-    const PLATFORM_SELECTORS = {
-      "swagger-ui": [
-        ".model-box",
-        ".model-container",
-        "[class*='model-box']",
-        "[class*='model-container']",
-        "[class*='schema']"
-      ],
-      "redoc": [
-        "[class*='schema']",
-        "[class*='model']"
-      ],
-      "apifox": [
-        ".schema-item",
-        "[class*='param']",
-        "[class*='schema']"
-      ],
-      "yapi": [
-        ".schema-table",
-        ".param-box",
-        "[class*='param']"
-      ],
-      "postman": [
-        ".schema-body",
-        "[class*='property']",
-        "[class*='schema']"
-      ],
-      "unknown": [
-        "[class*='schema']",
-        "[class*='model']",
-        "[class*='property-list']",
-        "[class*='field-list']",
-        "[class*='param']"
-      ]
-    };
+    const selectors = getPlatformAdapter(detectedPlatform).structuredBlockSelectors;
 
-    const selectors = PLATFORM_SELECTORS[detectedPlatform] || PLATFORM_SELECTORS["unknown"];
+    if (!selectors.length) {
+      return [];
+    }
 
     const candidates = [...rootNode.querySelectorAll(selectors.join(","))]
       .filter((element) =>
@@ -1043,14 +1261,14 @@
     return rows.length >= 2;
   }
 
-  function extractStructuredFieldRows(blockNode) {
+  function extractStructuredFieldRows(blockNode, adapter) {
     const rowNodes = getStructuredFieldRowCandidates(blockNode);
     if (rowNodes.length < 2) {
       return [];
     }
 
     const blockRect = blockNode.getBoundingClientRect();
-    const rawRows = rowNodes.map((rowNode) => buildStructuredFieldRowRecord(rowNode, blockRect)).filter(Boolean);
+    const rawRows = rowNodes.map((rowNode) => buildStructuredFieldRowRecord(rowNode, blockRect, adapter)).filter(Boolean);
     if (rawRows.length < 2) {
       return [];
     }
@@ -1074,15 +1292,15 @@
     );
   }
 
-  function buildStructuredFieldRowRecord(rowNode, blockRect) {
+  function buildStructuredFieldRowRecord(rowNode, blockRect, adapter) {
     const nestedRows = getNestedStructuredFieldRows(rowNode);
     const nameElement = findStructuredFieldNameElement(rowNode, nestedRows);
-    const name = cleanWhitespace(nameElement?.textContent || "");
+    const name = readFieldNameValue(nameElement);
     if (!name) {
       return null;
     }
 
-    const depthInfo = inspectStructuredDepth(rowNode, nameElement, blockRect);
+    const depthInfo = inspectStructuredDepth(rowNode, nameElement, blockRect, adapter);
     const typeElement = findStructuredFieldTypeElement(rowNode, nameElement, nestedRows);
     const required = detectRequiredLabel(rowNode, nestedRows);
     const description = extractStructuredDescription(rowNode, {
@@ -1114,7 +1332,7 @@
           return false;
         }
 
-        return cleanWhitespace(nameElement.textContent || "").length > 0;
+        return readFieldNameValue(nameElement).length > 0;
       });
   }
 
@@ -1125,6 +1343,8 @@
 
   function findStructuredFieldNameElement(rowNode, nestedRows = []) {
     const selectors = [
+      "[data-field-path]",
+      "[data-path]",
       ".prop-name",
       "[class*='prop-name']",
       ".property-name",
@@ -1320,10 +1540,23 @@
     return bestNode;
   }
 
-  function inspectStructuredDepth(rowNode, subjectNode, base) {
+  function inspectStructuredDepth(rowNode, subjectNode, base, adapter) {
     const rawIndentPx = base instanceof DOMRect
       ? measureRectRelativeIndentPx(base, subjectNode)
       : measureRelativeIndentPx(base, subjectNode);
+
+    const platformDepth = resolveAdapterFieldDepth(adapter, {
+      rowNode,
+      subjectNode,
+      nameCell: base instanceof Element ? base : subjectNode?.closest?.("td") || null
+    });
+    if (platformDepth) {
+      return {
+        depth: platformDepth.depth,
+        source: platformDepth.source || "dom",
+        rawIndentPx
+      };
+    }
 
     const attributeDepth = findDepthAttributeValue(rowNode, subjectNode);
     if (Number.isFinite(attributeDepth)) {
@@ -1348,6 +1581,26 @@
       source: "none",
       rawIndentPx
     };
+  }
+
+  function resolveAdapterFieldDepth(adapter, context) {
+    if (typeof adapter?.resolveFieldDepth !== "function") {
+      return null;
+    }
+
+    try {
+      const result = adapter.resolveFieldDepth(context);
+      if (!Number.isFinite(result?.depth)) {
+        return null;
+      }
+
+      return {
+        depth: Math.max(0, Math.trunc(result.depth)),
+        source: result.source || "dom"
+      };
+    } catch {
+      return null;
+    }
   }
 
   function findDepthAttributeValue(...nodes) {
@@ -1382,14 +1635,30 @@
     }
 
     const baseline = Math.min(...finiteIndents);
+
+    // 收集所有可能的步进值（降低阈值到 3px）
     const positiveSteps = finiteIndents
       .map((value) => Math.max(0, value - baseline))
-      .filter((value) => value >= 6)
+      .filter((value) => value >= 3)  // 降低阈值 6px → 3px
       .sort((left, right) => left - right);
+
+    // 计算最小公约数作为单位
+    let unit = positiveSteps[0] || 12;  // 默认值 16px → 12px
+
+    // 如果有多个步进值，尝试找到最大公约数
+    if (positiveSteps.length > 1) {
+      const gcd = (a, b) => b === 0 ? a : gcd(b, a % b);
+      unit = positiveSteps.reduce((acc, val) => gcd(acc, val));
+
+      // 如果 gcd 太小（< 3px），使用最小步进值
+      if (unit < 3) {
+        unit = positiveSteps[0];
+      }
+    }
 
     return {
       baseline,
-      unit: positiveSteps[0] || 16
+      unit
     };
   }
 
@@ -1399,7 +1668,7 @@
     }
 
     const normalizedIndent = Math.max(0, rawIndentPx - indentProfile.baseline);
-    if (normalizedIndent < 6) {
+    if (normalizedIndent < 3) {
       return 0;
     }
 
@@ -1543,12 +1812,11 @@
     return match ? match[1] : "";
   }
 
-  function findInitialCandidate() {
-    const platform = detectPlatform(document);
+  function findInitialCandidate(platform = detectPlatform(document)) {
     return pickContentRoot(document, platform) || document.querySelector("main") || document.body;
   }
 
-  function findSelectableCandidate(target) {
+  function findSelectableCandidate(target, platform = detectPlatform(document)) {
     let element = target instanceof Element ? target : target?.parentElement;
     const chain = [];
     let depth = 0;
@@ -1557,7 +1825,7 @@
       if (isSelectableContainer(element)) {
         chain.push({
           node: element,
-          score: scoreNode(element, detectPlatform(document)) + Math.max(0, 120 - depth * 12)
+          score: scoreNode(element, platform) + Math.max(0, 120 - depth * 12)
         });
       }
 
@@ -1622,5 +1890,9 @@
 
   function toMessage(error) {
     return error instanceof Error ? error.message : String(error || "Unknown error");
+  }
+
+  function sanitizeSourceUrl(rawUrl) {
+    return extractionCore?.sanitizeSourceUrl(rawUrl) || rawUrl;
   }
 })();

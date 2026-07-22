@@ -8,9 +8,12 @@ A Chrome extension that focuses on API-documentation pages: it extracts the acti
 
 - Convert the current `http` or `https` page into Markdown.
 - Prioritize API-documentation content and filter common navigation, sidebar, and menu noise.
-- Detect common API doc platforms such as Swagger UI and Redoc.
+- Detect Swagger UI, Redoc, Apifox, YApi, Postman Docs, Temu Partner, and TikTok Shop Partner, with a generic fallback.
 - Fall back to manual selection when automatic extraction is not precise enough.
-- Open a preview page where the Markdown can be reviewed and edited.
+- Preserve indentation, spaces, and line breaks in code blocks and infer common languages.
+- Treat dotted multi-level parameters such as `aaa.bbb.ccc` as absolute paths, including arrays and Unicode names.
+- Edit Markdown beside a sanitized live preview, with copy, autosave, and re-extraction controls.
+- Keep concurrent previews isolated with per-export session IDs.
 - Download the edited content as a Markdown file.
 
 ## Project Structure
@@ -26,7 +29,14 @@ A Chrome extension that focuses on API-documentation pages: it extracts the acti
 1. Open `chrome://extensions`.
 2. Enable **Developer mode**.
 3. Click **Load unpacked**.
-4. Select this directory: `/mnt/d/project/markdown`.
+4. Select this project directory: `/mnt/d/project/page_to_markdown`.
+
+The unpacked extension works without installing dependencies; runtime preview libraries are committed under `vendor/`. To run tests:
+
+```bash
+npm install
+npm test
+```
 
 ## How to Use
 
@@ -40,13 +50,10 @@ A Chrome extension that focuses on API-documentation pages: it extracts the acti
 ## Current Limitations
 
 - The extraction still uses heuristics and platform-specific selectors; highly customized documentation portals may need manual selection.
-- Only Swagger UI and Redoc receive targeted platform rules in this version.
+- Platform adapters still depend on rendered DOM and may need fixture updates after platform redesigns.
 - Images are referenced by URL only. The extension does not download or embed image assets.
 - Browser-internal pages such as `chrome://` are not supported.
 
-## Suggested Next Steps
+## Testing
 
-- Add more platform adapters for Apifox, YApi, Stoplight, and Postman Docs.
-- Replace the built-in extractor with Mozilla Readability where it improves generic fallback.
-- Replace the built-in HTML-to-Markdown walker with Turndown.
-- Add rendered Markdown preview alongside the editable source.
+Run `npm test` for converter, field-path, adapter, storage, preview-security, and content-script integration coverage. See [MANUAL_TEST.md](./MANUAL_TEST.md) for Chrome checks.

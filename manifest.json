@@ -1,11 +1,13 @@
 {
   "manifest_version": 3,
   "name": "Page to Markdown",
-  "version": "0.1.0",
+  "version": "0.2.0",
+  "minimum_chrome_version": "102",
   "description": "Convert the current page into Markdown, preview it, and download it as a file.",
   "permissions": [
     "activeTab",
     "downloads",
+    "clipboardWrite",
     "scripting",
     "storage"
   ],

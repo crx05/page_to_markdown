@@ -8,10 +8,12 @@
 
 - 将当前 `http` 或 `https` 页面转换为 Markdown。
 - 优先提取 API 文档主体内容，并过滤常见导航、侧边栏和菜单噪音。
-- 识别常见 API 文档平台，例如 Swagger UI 和 Redoc。
+- 识别 Swagger UI、Redoc、Apifox、YApi、Postman Docs、Temu Partner 和 TikTok Shop Partner，并在未知平台使用通用回退。
 - 当自动提取不够准确时，可回退到手动选择文档区域。
-- 尽量将代码示例保留为 fenced code block，并为常见示例推断语言，例如 JSON、PHP、Python 和 cURL。
-- 在预览页面中查看和编辑生成的 Markdown。
+- 保留代码示例的缩进、空格和换行，并为 JSON、PHP、Python 和 cURL 推断语言。
+- 将 `aaa.bbb.ccc` 形式的多级参数视为绝对路径，兼容视觉缩进、属性深度、数组和中文路径。
+- 在实时分栏预览中查看和编辑 Markdown，支持复制、自动保存和重新提取。
+- 每次导出使用独立会话 ID，多个预览页面不会互相覆盖。
 - 将编辑后的内容下载为 Markdown 文件。
 
 ## 项目结构
@@ -27,7 +29,14 @@
 1. 打开 `chrome://extensions`。
 2. 启用 **Developer mode**。
 3. 点击 **Load unpacked**。
-4. 选择当前目录：`/mnt/d/project/markdown`。
+4. 选择本项目目录：`/mnt/d/project/page_to_markdown`。
+
+扩展运行不需要安装依赖；预览使用的第三方脚本已经保存在 `vendor/`。如需运行测试：
+
+```bash
+npm install
+npm test
+```
 
 ## 使用方式
 
@@ -41,13 +50,10 @@
 ## 当前限制
 
 - 提取逻辑仍然基于启发式规则和平台特定选择器；对于高度定制的文档门户，可能仍然需要手动选择。
-- 当前仅对 Swagger UI 和 Redoc 做了定向适配。
+- 平台适配仍基于页面 DOM；平台升级或高度定制后可能需要更新 adapter 夹具。
 - 图片只会保留 URL 引用，不会下载或嵌入图片资源。
 - 不支持 `chrome://` 这类浏览器内部页面。
 
-## 后续建议
+## 测试
 
-- 增加更多平台适配，例如 Apifox、YApi、Stoplight 和 Postman Docs。
-- 在通用回退场景中引入 Mozilla Readability，以提升正文提取效果。
-- 用 Turndown 替换当前内置的 HTML 转 Markdown 逻辑。
-- 增加渲染后的 Markdown 预览视图。
+运行 `npm test` 可执行转换、字段路径、平台 adapter、存储、预览安全和内容脚本集成测试。Chrome 手动检查项见 [MANUAL_TEST.md](./MANUAL_TEST.md)。

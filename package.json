@@ -1,0 +1,17 @@
+{
+  "name": "page-to-markdown-extension",
+  "version": "0.2.0",
+  "private": true,
+  "description": "Tests and local runtime dependencies for the Page to Markdown Chrome extension.",
+  "scripts": {
+    "test": "node --test tests/*.test.js",
+    "check": "node --check background.js && node --check content-script.js && node --check export-storage-core.js && node --check extraction-core.js && node --check field-path-utils.js && node --check markdown-converter.js && node --check platform-adapters.js && node --check popup.js && node --check preview-renderer.js && node --check preview.js"
+  },
+  "dependencies": {
+    "dompurify": "3.2.6",
+    "marked": "15.0.12"
+  },
+  "devDependencies": {
+    "jsdom": "26.1.0"
+  }
+}
